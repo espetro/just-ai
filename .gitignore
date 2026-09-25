@@ -6,3 +6,7 @@ node_modules
 .env
 .dev.vars
 dist
+# dist is committed for packages/gateway so git-dep consumers get a
+# prebuilt tarball — no install-time build (prepare needs esbuild's
+# postinstall, which pnpm blocks in clean CI environments)
+!packages/gateway/dist

@@ -16,7 +16,6 @@
   ],
   "scripts": {
     "build": "unbuild",
-    "prepare": "unbuild",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

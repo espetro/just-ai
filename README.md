@@ -109,7 +109,9 @@ Static inline `models: {...}` still works for simple deployments.
 ## Publishing `@just-ai/gateway` later
 
 The package is already npm-shaped (`files: ["dist"]`, `unbuild` →
-`dist/index.mjs` + `.d.ts`, `prepare` builds on git-dep install). To publish:
+`dist/index.mjs` + `.d.ts`). `dist/` is **committed** so `github:` dep
+consumers get a prebuilt tarball — rebuild + commit it whenever `src/`
+changes (`pnpm --filter @just-ai/gateway build`). To publish:
 `pnpm --filter @just-ai/gateway publish --access public` (plus an
 `NPM_TOKEN` release workflow). Consumers then switch the dep spec from
 `github:...#path:` to a semver.
