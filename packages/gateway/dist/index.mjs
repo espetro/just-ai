@@ -395,28 +395,28 @@ const defaultSteps = [
 function createGateway(opts) {
   const steps = opts.steps ?? defaultSteps;
   return async function gatewayHandler(event) {
-    const profile = typeof opts.profile === "function" ? await opts.profile(event) : opts.profile;
-    const storage = typeof opts.storage === "function" ? opts.storage(event) : opts.storage;
-    const ctx = {
-      event,
-      profile,
-      env: createEnvAccess(event),
-      storage,
-      requestId: crypto.randomUUID(),
-      clientIp: getClientIp(event)
-    };
     if (event.method !== "POST" && event.method !== "OPTIONS") {
       return gatewayError(405, "Method not allowed", "invalid_request_error", {
         allow: "POST, OPTIONS"
       });
     }
     try {
+      const profile = typeof opts.profile === "function" ? await opts.profile(event) : opts.profile;
+      const storage = typeof opts.storage === "function" ? opts.storage(event) : opts.storage;
+      const ctx = {
+        event,
+        profile,
+        env: createEnvAccess(event),
+        storage,
+        requestId: crypto.randomUUID(),
+        clientIp: getClientIp(event)
+      };
       const res = await runPipeline(ctx, steps);
       const headers = new Headers(res.headers);
       for (const [k, v] of Object.entries(corsHeaders(ctx))) headers.set(k, v);
       return new Response(res.body, { status: res.status, headers });
     } catch (err) {
-      console.error("pipeline error", err);
+      console.error("gateway error", err);
       return gatewayError(500, "Internal gateway error", "internal");
     }
   };
