@@ -50,22 +50,44 @@ settings, rate-limit windows + store, clamp ceilings, and `models`:
 **public alias → ordered provider lanes**. Upstream provider ids never reach
 the wire — clients ask for `chat` and get whatever lane answered.
 
+### Keep lanes in config, not code (recommended)
+
+`profile` may be an **async resolver**, so the model map can live wherever
+config belongs — KV, a JSON env var, a remote document — while API keys stay
+in env secrets:
+
 ```ts
-models: {
-  chat: {
-    lanes: [
-      { provider: "groq",   model: "openai/gpt-oss-120b" },
-      { provider: "zai",    model: "glm-4.7-flash" },
-      { provider: "google", model: "gemini-2.5-flash-lite" },
-      { provider: "cf-ai",  model: "@cf/meta/llama-3.2-3b-instruct" },
-    ],
-  },
+import { parseModelsJson } from "@just-ai/gateway";
+
+createGateway({
+  profile: async (event) => ({
+    ...myProfile,                                   // static: origins, limits…
+    models: parseModelsJson(
+      await useStorage("ratelimit").getItem("config:models"),
+    ),
+  }),
+  storage: () => useStorage("ratelimit"),
+});
+```
+
+The JSON doc — lanes only reference env var *names*, never key values:
+
+```json
+{
+  "chat": { "lanes": [
+    { "provider": "groq", "model": "openai/gpt-oss-120b" },
+    { "provider": "any-name", "baseUrl": "https://api.deepseek.com/v1",
+      "keyEnv": "DEEPSEEK_API_KEY", "model": "deepseek-chat" },
+    { "provider": "cf-ai", "model": "@cf/meta/llama-3.2-3b-instruct" }
+  ] }
 }
 ```
 
-`openaiCompat` covers any OpenAI-shaped endpoint (Groq, Z.ai, Google's
-OpenAI shim, OpenRouter — or a custom `baseUrl`). `cf-ai` uses the Workers
-AI binding and silently deactivates off-Cloudflare.
+`provider` is either a built-in preset (`groq`, `zai`, `google`,
+`openrouter` — just a baseUrl + keyEnv convention) or **any** name when the
+lane supplies its own `baseUrl` + `keyEnv` — any OpenAI-compatible endpoint
+works. `cf-ai` uses the Workers AI binding and deactivates off-Cloudflare.
+Static inline `models: {...}` still works for simple deployments.
 
 ## Pipeline
 

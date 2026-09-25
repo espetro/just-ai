@@ -5,6 +5,7 @@
 export { createGateway, defaultSteps, type GatewayOptions } from "./createGateway";
 export { defineGatewayProfile } from "./profile";
 export { modelsList } from "./models";
+export { parseModelsJson } from "./config";
 export { runPipeline } from "./pipeline";
 export { createEnvAccess, getClientIp } from "./env";
 export { circuitBreaker } from "./circuit";

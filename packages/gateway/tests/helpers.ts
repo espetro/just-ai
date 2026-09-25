@@ -36,6 +36,7 @@ export function testContext(
       "content-type": "application/json",
       "content-length": String(Buffer.byteLength(raw)),
     },
+    socket: { remoteAddress: "1.2.3.4" },
   });
   const env: Record<string, string> = { KEY_A: "k-a", KEY_B: "k-b" };
   return {

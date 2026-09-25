@@ -23,10 +23,11 @@ export const defaultSteps: Step[] = [
 export interface GatewayOptions {
   /**
    * The profile this deployment serves — a static GatewayProfile for one
-   * project, or a resolver for per-request selection (multi-tenant mode:
-   * dispatch on Host, API key, path prefix, ...).
+   * project, or a resolver (sync or async) for per-request selection:
+   * multi-tenant dispatch on Host/API key/path, or merging remote config
+   * (e.g. a KV-hosted model map via parseModelsJson).
    */
-  profile: GatewayProfile | ((event: H3Event) => GatewayProfile);
+  profile: GatewayProfile | ((event: H3Event) => GatewayProfile | Promise<GatewayProfile>);
   /**
    * Storage for rate-limit counters + circuit breakers. In nitro apps pass
    * `() => useStorage("<mount>")` — resolved lazily inside the request
@@ -46,7 +47,9 @@ export function createGateway(opts: GatewayOptions) {
   const steps = opts.steps ?? defaultSteps;
   return async function gatewayHandler(event: H3Event): Promise<Response> {
     const profile =
-      typeof opts.profile === "function" ? opts.profile(event) : opts.profile;
+      typeof opts.profile === "function"
+        ? await opts.profile(event)
+        : opts.profile;
     const storage =
       typeof opts.storage === "function" ? opts.storage(event) : opts.storage;
     const ctx: GatewayContext = {
