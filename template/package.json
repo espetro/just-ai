@@ -1,0 +1,28 @@
+{
+  "name": "just-ai-gateway-template",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.15.0",
+  "scripts": {
+    "dev": "nitro dev",
+    "build": "nitro build",
+    "preview": "wrangler --cwd .output dev",
+    "deploy": "wrangler --cwd .output deploy",
+    "test": "pnpm --filter @just-ai/gateway test",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "nitro prepare"
+  },
+  "dependencies": {
+    "@just-ai/gateway": "workspace:*",
+    "h3": "^1.15.11",
+    "ofetch": "^1.5.1",
+    "unstorage": "^1.17.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260923.1",
+    "@types/node": "^24.0.0",
+    "nitropack": "^2.13.4",
+    "typescript": "^5.9.0",
+    "wrangler": "4.135.0"
+  }
+}

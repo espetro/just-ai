@@ -1,0 +1,34 @@
+{
+  "name": "@just-ai/gateway",
+  "version": "0.0.1",
+  "description": "Runtime-agnostic AI gateway core — OpenAI-compatible endpoint with profiles, rate limiting, bot gating, and provider failover.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "unbuild",
+    "prepare": "unbuild",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "h3": "^1.15.11",
+    "ofetch": "^1.5.1",
+    "unstorage": "^1.17.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "unbuild": "^3.6.1",
+    "vitest": "^5.0.1"
+  }
+}

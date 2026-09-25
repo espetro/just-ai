@@ -1,0 +1,8 @@
+node_modules
+.output
+.nitro
+.wrangler
+.data
+.env
+.dev.vars
+dist

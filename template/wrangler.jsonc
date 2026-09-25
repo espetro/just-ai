@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // ── CUSTOMIZE: worker name + route for your deployment ────────────────
+  "name": "my-ai-gateway",
+  "workers_dev": false,
+  "routes": [{ "pattern": "api.example.com", "custom_domain": true }],
+  // ─────────────────────────────────────────────────────────────────────
+  "vars": {},
+  // Native edge rate limiting (unmetered). One binding = one fixed window;
+  // multi-window control lives in profile rateLimit.windows on the
+  // unstorage store instead.
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "my-gw-edge",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ],
+  "kv_namespaces": [
+    // `wrangler kv namespace create GATEWAY_KV` once, paste the id here.
+    { "binding": "GATEWAY_KV", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ],
+  // Only needed if your profile uses a cf-ai lane — delete otherwise.
+  "ai": { "binding": "AI" }
+}
