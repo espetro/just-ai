@@ -1,0 +1,26 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+      # dist/ is committed for github:-spec consumers — the gate keeps it in
+      # sync with src/ (a stale dist fails the diff).
+      - run: pnpm -r build
+      - run: test -z "$(git status --porcelain packages/gateway/dist)" || (echo "dist/ out of date — run pnpm -r build and commit" && exit 1)
