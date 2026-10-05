@@ -12,9 +12,9 @@ export { circuitBreaker } from "./circuit";
 export { createRateLimiter, type RateLimiter, type RateLimitResult } from "./ratelimit";
 export { memoryLimiter, unstorageLimiter } from "./ratelimit/unstorage";
 export { cfBindingLimiter } from "./ratelimit/cfBinding";
-export { resolveLane, type ProviderLane } from "./providers";
-export { openaiCompatLane } from "./providers/openaiCompat";
-export { cfAiLane } from "./providers/cfAi";
+export { resolveModel, builtinFactories, OPENAI_COMPAT_PRESETS, type ResolvedModel } from "./providers/sdk";
+export { dispatchLane, probeLane, LaneError } from "./providers/dispatch";
+export { streamToOpenAiSse, generateToOpenAiJson } from "./providers/emitter";
 export * as steps from "./steps";
 export {
   gatewayError,
@@ -33,4 +33,7 @@ export type {
   ChatMessage,
   Step,
   EnvAccess,
+  ModelFactory,
+  LaneAttemptInfo,
+  RequestDoneInfo,
 } from "./types";

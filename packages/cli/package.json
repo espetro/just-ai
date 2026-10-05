@@ -1,0 +1,23 @@
+{
+  "name": "just-ai",
+  "version": "0.0.1",
+  "description": "Ops CLI for just-ai gateways — status, config, per-lane probes, local doctor, wrangler tail.",
+  "type": "module",
+  "packageManager": "pnpm@10.15.0",
+  "bin": {
+    "just-ai": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.1"
+  }
+}

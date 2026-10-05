@@ -1,91 +1,8 @@
 import { H3Event } from 'h3';
 import { Storage } from 'unstorage';
-
-/** Public alias → ordered provider failover chain. */
-interface ModelRoute {
-    lanes: LaneSpec[];
-}
-interface LaneSpec {
-    /** Registry key of a provider adapter (groq, zai, google, openrouter, cf-ai). */
-    provider: string;
-    /** Upstream model id sent to the provider. */
-    model: string;
-    /** Override adapter default base URL. */
-    baseUrl?: string;
-    /** Override env var name holding the API key. */
-    keyEnv?: string;
-}
-interface RateWindow {
-    /** Logical name — becomes part of the storage key. */
-    name: string;
-    limit: number;
-    windowSec: number;
-}
-interface GatewayProfile {
-    name: string;
-    /** Exact origins or `*.suffix` wildcards. Requests without an Origin pass (curl, server-to-server). */
-    origins: string[];
-    cors?: {
-        allowHeaders?: string[];
-        maxAge?: number;
-    };
-    botGate: {
-        type: "turnstile" | "none";
-        /** Env var holding the Turnstile secret. */
-        secretEnv?: string;
-        /** Header carrying the token (default: cf-turnstile-token). */
-        header?: string;
-        /** siteverify `hostname` must be one of these. */
-        allowedHostnames?: string[];
-    };
-    rateLimit: {
-        keyStrategy: "ip" | "apiKey";
-        /** Backend: native CF binding, the shared unstorage mount, or in-memory. */
-        store: "cf-binding" | "storage" | "memory" | "auto";
-        windows: RateWindow[];
-    };
-    clamp: {
-        maxTokens: number;
-        maxPromptBytes: number;
-        maxMessages: number;
-        stream?: boolean;
-    };
-    models: Record<string, ModelRoute>;
-}
-interface ChatMessage {
-    role: string;
-    content: unknown;
-}
-interface ChatRequest {
-    model: string;
-    messages: ChatMessage[];
-    stream?: boolean;
-    max_tokens?: number;
-    temperature?: number;
-    [k: string]: unknown;
-}
-/** Read-only view of secrets/env across runtimes (CF bindings, process.env). */
-interface EnvAccess {
-    get(name: string): string | undefined;
-    /** Raw platform bindings (CF `env`) when present — for AI/ratelimit bindings. */
-    cfEnv?: Record<string, unknown>;
-}
-interface GatewayContext {
-    event: H3Event;
-    profile: GatewayProfile;
-    env: EnvAccess;
-    /** unstorage mount for ratelimit counters + circuit breakers. */
-    storage: Storage;
-    requestId: string;
-    clientIp: string;
-    /** Parsed, clamped request body — set by the clamp step. */
-    body?: ChatRequest;
-}
-/**
- * Pipeline step: return a Response to short-circuit (preflight, errors,
- * final proxy) or void to continue.
- */
-type Step = (ctx: GatewayContext) => Promise<Response | void>;
+import { G as GatewayProfile, S as Step, M as ModelFactory, a as GatewayContext, b as ModelRoute, E as EnvAccess, R as RateWindow, L as LaneSpec, C as ChatRequest } from './shared/gateway.Borrsgya.js';
+export { c as ChatMessage, d as LaneAttemptInfo, e as RequestDoneInfo } from './shared/gateway.Borrsgya.js';
+import { LanguageModelV4, LanguageModelV4GenerateResult, LanguageModelV4StreamPart } from '@ai-sdk/provider';
 
 declare const defaultSteps: Step[];
 interface GatewayOptions {
@@ -104,6 +21,18 @@ interface GatewayOptions {
     storage: Storage | ((event: H3Event) => Storage);
     /** Ordered pipeline steps; defaults to the full security chain. */
     steps?: Step[];
+    /**
+     * Deployment provider factories shadowing built-ins — lane `provider`
+     * names map to LanguageModelV4 factories (see ModelFactory). The plug
+     * seam for providers we don't ship.
+     */
+    providers?: Record<string, ModelFactory>;
+    /**
+     * Observability hooks — called with lane metadata only (never prompt
+     * content): wire to console.log, KV counters, Analytics Engine, OTel…
+     */
+    onLaneAttempt?: GatewayContext["onLaneAttempt"];
+    onRequestDone?: GatewayContext["onRequestDone"];
 }
 /**
  * Handler factory — returns an h3-compatible handler suitable for
@@ -219,40 +148,98 @@ interface CfRateLimitBinding {
  */
 declare function cfBindingLimiter(binding: CfRateLimitBinding): RateLimiter;
 
-/**
- * A provider adapter turns a LaneSpec into a dispatchable upstream call.
- * Implementations must be constructible without secrets — env access happens
- * inside dispatch()/available() at request time.
- */
-interface ProviderLane {
-    /** Can this lane run here? (API key present, CF binding exists, ...) */
-    available(ctx: GatewayContext, spec: LaneSpec): boolean;
-    /**
-     * Fire the upstream request and return the RAW response (possibly an
-     * in-flight SSE stream). Callers must treat a resolved ok Response as
-     * committed — no retry is possible once streaming starts.
-     */
-    dispatch(ctx: GatewayContext, spec: LaneSpec, body: ChatRequest): Promise<Response>;
-}
-/** Registry: lane spec → adapter. Unknown provider keys fall back to openai-compat. */
-declare function resolveLane(spec: LaneSpec): ProviderLane;
-
-/**
- * Any OpenAI-compatible `/chat/completions` endpoint. Covers Groq, Z.ai,
- * Google AI Studio (OpenAI shim), OpenRouter — and any future provider that
- * speaks the same wire format — with zero bespoke code.
- */
-declare function openaiCompatLane(defaults: {
-    baseUrl?: string;
+declare const OPENAI_COMPAT_PRESETS: Record<string, {
+    baseUrl: string;
+    keyEnv: string;
+}>;
+/** Built-in factories. Unknown provider + explicit baseUrl → openai-compat. */
+declare const builtinFactories: Record<string, ModelFactory>;
+interface ResolvedModel {
+    model: LanguageModelV4;
+    /** Env var name the key came from (for diagnostics — never the value). */
     keyEnv?: string;
-}): ProviderLane;
+}
+/**
+ * Resolve a lane to a LanguageModel, or undefined when it can't run here
+ * (missing key, missing binding) — the failover chain just skips it.
+ * `custom` factories (createGateway providers option) shadow built-ins.
+ */
+declare function resolveModel(ctx: GatewayContext, spec: LaneSpec, custom?: Record<string, ModelFactory>): ResolvedModel | undefined;
 
 /**
- * Cloudflare Workers AI lane — the only adapter that is inherently CF-only
- * (it uses the `ai` binding). available() returns false elsewhere, so the
- * failover chain just skips it on other runtimes.
+ * Single OpenAI-wire emitter for every provider lane — this is the only
+ * place upstream output becomes `chat.completion` / `chat.completion.chunk`.
+ * Provider ids never reach the wire: `model` in payloads is the public alias.
  */
-declare const cfAiLane: ProviderLane;
+interface TokenUsage {
+    promptTokens?: number;
+    completionTokens?: number;
+}
+interface EmitOpts {
+    /** Public alias — what the client asked for. */
+    alias: string;
+    id: string;
+    created: number;
+    /** Client requested usage chunks (stream_options.include_usage). */
+    sendUsage: boolean;
+    /** Fires once with final usage + finish reason, after the stream ends. */
+    onDone?: (info: {
+        usage?: TokenUsage;
+        finishReason?: string;
+    }) => void;
+}
+/**
+ * LanguageModelV4 stream → OpenAI SSE stream. Text, reasoning (as
+ * `reasoning_content`, the DeepSeek/OpenRouter convention), complete
+ * tool calls, finish_reason, and terminal usage are mapped; provider
+ * metadata / structural parts are dropped.
+ */
+declare function streamToOpenAiSse(upstream: ReadableStream<LanguageModelV4StreamPart>, opts: EmitOpts): ReadableStream<Uint8Array>;
+/** LanguageModelV4 generate result → OpenAI `chat.completion` JSON. */
+declare function generateToOpenAiJson(result: LanguageModelV4GenerateResult, opts: {
+    alias: string;
+    id: string;
+    created: number;
+}): {
+    body: Record<string, unknown>;
+    usage?: TokenUsage;
+};
+
+/** Failure surfaced to the proxy step for failover decisions. */
+declare class LaneError extends Error {
+    /** Upstream HTTP status when known (APICallError), else undefined. */
+    status?: number;
+    /** Raw upstream error body for pass-through (4xx that isn't failover). */
+    body?: string;
+    constructor(message: string, status?: number, cause?: unknown);
+}
+interface LaneDispatch {
+    response: Response;
+    /** Usage seen at emit time (streams report async — see onDone). */
+    usage?: TokenUsage;
+}
+/**
+ * Resolve + dispatch one lane. Throws LaneError on failure BEFORE a response
+ * is committed — the proxy step maps `status` to a failover decision.
+ * `doGenerate`/`doStream` resolving = upstream answered = commit point.
+ */
+declare function dispatchLane(ctx: GatewayContext, spec: LaneSpec, body: ChatRequest, opts?: {
+    model?: LanguageModelV4;
+    onDone?: (info: {
+        usage?: TokenUsage;
+        finishReason?: string;
+    }) => void;
+}): Promise<LaneDispatch>;
+/**
+ * Canned probe for a single lane — admin test endpoint and CLI share this.
+ * Bypasses failover entirely so the result is this lane's own verdict.
+ */
+declare function probeLane(ctx: GatewayContext, spec: LaneSpec): Promise<{
+    ok: boolean;
+    status?: number;
+    latencyMs: number;
+    error?: string;
+}>;
 
 declare function originAllowed(origin: string | undefined, allowed: string[]): boolean;
 declare function corsHeaders(ctx: GatewayContext): Record<string, string>;
@@ -289,10 +276,10 @@ declare const rateLimitStep: Step;
 declare const clampStep: Step;
 
 /**
- * Provider failover + SSE passthrough. THE critical constraint: a lane is
- * chosen and committed *before* any body bytes reach the client — once the
- * upstream Response resolves ok, its stream is handed through untouched and
- * retry is impossible.
+ * Provider failover + OpenAI-wire passthrough. THE critical constraint: a
+ * lane is committed when `doGenerate`/`doStream` resolves — upstream
+ * answered — and the emitted stream is handed through untouched; retry is
+ * then impossible. dispatchLane throws LaneError before the commit point.
  */
 declare const proxyStep: Step;
 
@@ -324,5 +311,5 @@ declare function forbidden(message?: string): Response;
 declare function badRequest(message: string): Response;
 declare function allLanesDown(): Response;
 
-export { allLanesDown, badRequest, cfAiLane, cfBindingLimiter, circuitBreaker, createEnvAccess, createGateway, createRateLimiter, defaultSteps, defineGatewayProfile, forbidden, gatewayError, getClientIp, memoryLimiter, modelsList, openaiCompatLane, parseModelsJson, rateLimited, resolveLane, runPipeline, index as steps, unstorageLimiter };
-export type { ChatMessage, ChatRequest, EnvAccess, GatewayContext, GatewayOptions, GatewayProfile, LaneSpec, ModelRoute, ProviderLane, RateLimitResult, RateLimiter, RateWindow, Step };
+export { ChatRequest, EnvAccess, GatewayContext, GatewayProfile, LaneError, LaneSpec, ModelFactory, ModelRoute, OPENAI_COMPAT_PRESETS, RateWindow, Step, allLanesDown, badRequest, builtinFactories, cfBindingLimiter, circuitBreaker, createEnvAccess, createGateway, createRateLimiter, defaultSteps, defineGatewayProfile, dispatchLane, forbidden, gatewayError, generateToOpenAiJson, getClientIp, memoryLimiter, modelsList, parseModelsJson, probeLane, rateLimited, resolveModel, runPipeline, index as steps, streamToOpenAiSse, unstorageLimiter };
+export type { GatewayOptions, RateLimitResult, RateLimiter, ResolvedModel };

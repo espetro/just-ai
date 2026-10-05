@@ -1,7 +1,9 @@
 import { allLanesDown } from "../errors";
 import { circuitBreaker } from "../circuit";
-import { resolveLane } from "../providers";
-import type { GatewayContext, Step } from "../types";
+import { defer, emit } from "../env";
+import { dispatchLane, LaneError } from "../providers/dispatch";
+import { resolveModel } from "../providers/sdk";
+import type { GatewayContext, LaneAttemptInfo, Step } from "../types";
 import { corsHeaders } from "./cors";
 
 const HOP_BY_HOP = new Set([
@@ -26,55 +28,92 @@ function isFailoverStatus(status: number): boolean {
 }
 
 /**
- * Provider failover + SSE passthrough. THE critical constraint: a lane is
- * chosen and committed *before* any body bytes reach the client — once the
- * upstream Response resolves ok, its stream is handed through untouched and
- * retry is impossible.
+ * Provider failover + OpenAI-wire passthrough. THE critical constraint: a
+ * lane is committed when `doGenerate`/`doStream` resolves — upstream
+ * answered — and the emitted stream is handed through untouched; retry is
+ * then impossible. dispatchLane throws LaneError before the commit point.
  */
 export const proxyStep: Step = async (ctx) => {
   const route = ctx.profile.models[ctx.body!.model];
   const cb = circuitBreaker(ctx.storage);
   const failures: string[] = [];
+  const startedAt = Date.now();
+  let attempts = 0;
+
+  const emitAttempt = (info: LaneAttemptInfo) => emit(ctx.onLaneAttempt, ctx, info);
+  const done = (provider: string | undefined, status: number) => {
+    emit(ctx.onRequestDone, ctx, {
+      alias: ctx.body!.model,
+      provider,
+      attempts,
+      latencyMs: Date.now() - startedAt,
+      status,
+    });
+  };
 
   for (const spec of route.lanes) {
     const laneKey = `${ctx.profile.name}:${spec.provider}`;
-    const lane = resolveLane(spec);
+    const base = { alias: ctx.body!.model, provider: spec.provider, model: spec.model };
 
-    if (!lane.available(ctx, spec)) continue;
-    if (await cb.isOpen(laneKey)) continue;
-
-    let res: Response;
+    // Resolution doubles as the availability check (key/binding present).
+    let lane;
     try {
-      res = await lane.dispatch(ctx, spec, ctx.body!);
-    } catch (err) {
-      await cb.recordFailure(laneKey);
-      failures.push(`${spec.provider}: dispatch ${err instanceof Error ? err.message : "error"}`);
+      lane = resolveModel(ctx, spec, ctx.providers);
+    } catch {
+      lane = undefined;
+    }
+    if (!lane) {
+      emitAttempt({ ...base, outcome: "skipped_unavailable" });
+      continue;
+    }
+    if (await cb.isOpen(laneKey)) {
+      emitAttempt({ ...base, outcome: "skipped_circuit" });
       continue;
     }
 
-    if (res.ok) {
-      await cb.recordSuccess(laneKey);
-      return new Response(res.body, {
-        status: res.status,
-        headers: passthroughHeaders(res, ctx),
+    attempts++;
+    const t0 = Date.now();
+    try {
+      const { response } = await dispatchLane(ctx, spec, ctx.body!, {
+        model: lane.model,
+        onDone: (info) =>
+          // Stream usage lands post-commit — reported asynchronously.
+          emitAttempt({ ...base, outcome: "ok", status: 200, latencyMs: Date.now() - t0, usage: info.usage }),
       });
-    }
 
-    // Read a small error body for logging, then decide.
-    const detail = await res.text().catch(() => "");
-    if (isFailoverStatus(res.status)) {
-      await cb.recordFailure(laneKey);
-      failures.push(`${spec.provider}: http ${res.status}`);
-      continue;
+      // Fire-and-forget: a storage write must not delay the stream's first byte.
+      defer(ctx.event, () => cb.recordSuccess(laneKey));
+      const res = new Response(response.body, {
+        status: response.status,
+        headers: passthroughHeaders(response, ctx),
+      });
+      done(spec.provider, response.status);
+      return res;
+    } catch (err) {
+      const le = err instanceof LaneError ? err : new LaneError("dispatch failed");
+      const status = le.status;
+      const failover = status === undefined || isFailoverStatus(status);
+      if (failover) defer(ctx.event, () => cb.recordFailure(laneKey));
+      emitAttempt({
+        ...base,
+        outcome: failover ? "failed" : "client_error",
+        status,
+        latencyMs: Date.now() - t0,
+      });
+      if (!failover) {
+        // Non-429 4xx is almost certainly the client's request — surface it
+        // verbatim rather than masking it behind a failover.
+        done(spec.provider, status!);
+        return new Response(le.body ?? le.message ?? "Upstream error", {
+          status: status!,
+          headers: corsHeaders(ctx) as unknown as Headers,
+        });
+      }
+      failures.push(`${spec.provider}: ${le.message}`);
     }
-    // 4xx that isn't rate-limit is almost certainly the client's request —
-    // surface it verbatim rather than masking it behind a failover.
-    return new Response(detail || res.statusText, {
-      status: res.status,
-      headers: passthroughHeaders(res, ctx),
-    });
   }
 
   console.error("all lanes failed", failures);
+  done(undefined, 503);
   return allLanesDown();
 };

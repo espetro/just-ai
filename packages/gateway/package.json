@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
+    },
+    "./admin": {
+      "types": "./dist/admin.d.ts",
+      "import": "./dist/admin.mjs"
     }
   },
   "main": "./dist/index.mjs",
@@ -17,12 +21,22 @@
   "scripts": {
     "build": "unbuild",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepare": "pnpm build"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.71",
+    "@ai-sdk/google": "^4.0.87",
+    "@ai-sdk/groq": "^4.0.54",
+    "@ai-sdk/openai": "^4.0.83",
+    "@ai-sdk/openai-compatible": "^3.0.62",
+    "@ai-sdk/provider": "^4.0.21",
+    "@ai-sdk/provider-utils": "^5.0.53",
+    "ai": "^7.0.127",
     "h3": "^1.15.11",
     "ofetch": "^1.5.1",
-    "unstorage": "^1.17.5"
+    "unstorage": "^1.17.5",
+    "workers-ai-provider": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

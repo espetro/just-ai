@@ -1,21 +1,16 @@
-import { getRequestIP, getRequestHeader, readRawBody } from 'h3';
+import { a as circuitBreaker, r as resolveModel, d as dispatchLane, e as defer, L as LaneError, f as emit, g as getClientIp, c as createEnvAccess } from './shared/gateway.Byslkx36.mjs';
+export { O as OPENAI_COMPAT_PRESETS, b as builtinFactories, h as generateToOpenAiJson, p as probeLane, s as streamToOpenAiSse } from './shared/gateway.Byslkx36.mjs';
+import { getRequestHeader, readRawBody } from 'h3';
 import { ofetch } from 'ofetch';
 import { createStorage } from 'unstorage';
 import memoryDriver from 'unstorage/drivers/memory';
-
-function createEnvAccess(event) {
-  const cfEnv = event.context.cloudflare?.env;
-  return {
-    cfEnv,
-    get(name) {
-      const v = process.env[name] ?? cfEnv?.[name];
-      return typeof v === "string" && v.length > 0 ? v : void 0;
-    }
-  };
-}
-function getClientIp(event) {
-  return event.node.req.headers["cf-connecting-ip"]?.toString() ?? getRequestIP(event, { xForwardedFor: true }) ?? "0.0.0.0";
-}
+import '@ai-sdk/provider';
+import '@ai-sdk/anthropic';
+import '@ai-sdk/openai';
+import '@ai-sdk/openai-compatible';
+import '@ai-sdk/google';
+import '@ai-sdk/groq';
+import 'workers-ai-provider';
 
 function gatewayError(status, message, type, headers = {}) {
   return Response.json(
@@ -215,119 +210,6 @@ const clampStep = async (ctx) => {
   return void 0;
 };
 
-function circuitBreaker(storage, opts = {}) {
-  const threshold = opts.threshold ?? 3;
-  const cooldownSec = opts.cooldownSec ?? 60;
-  const failsKey = (lane) => `cb:${lane}:fails`;
-  const openKey = (lane) => `cb:${lane}:openUntil`;
-  return {
-    async isOpen(lane) {
-      const until = await storage.getItem(openKey(lane)) ?? 0;
-      return until > Math.floor(Date.now() / 1e3);
-    },
-    async recordSuccess(lane) {
-      await storage.removeItem(failsKey(lane));
-      await storage.removeItem(openKey(lane));
-    },
-    async recordFailure(lane) {
-      const n = (await storage.getItem(failsKey(lane)) ?? 0) + 1;
-      await storage.setItem(failsKey(lane), n, { ttl: cooldownSec * 2 });
-      if (n >= threshold) {
-        await storage.setItem(
-          openKey(lane),
-          Math.floor(Date.now() / 1e3) + cooldownSec,
-          { ttl: cooldownSec * 2 }
-        );
-      }
-    }
-  };
-}
-
-const cfAiLane = {
-  available(ctx) {
-    return Boolean(ctx.env.cfEnv?.AI);
-  },
-  async dispatch(ctx, spec, body) {
-    const ai = ctx.env.cfEnv?.AI;
-    if (!ai) throw new Error("cf-ai lane: AI binding absent");
-    const messages = (body.messages ?? []).map((m) => ({
-      role: m.role,
-      content: typeof m.content === "string" ? m.content : JSON.stringify(m.content)
-    }));
-    const result = await ai.run(spec.model, {
-      messages,
-      max_tokens: body.max_tokens,
-      stream: body.stream === true
-    });
-    if (result instanceof ReadableStream) {
-      return new Response(result, {
-        status: 200,
-        headers: { "content-type": "text/event-stream" }
-      });
-    }
-    return Response.json({
-      id: `cfai-${crypto.randomUUID()}`,
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1e3),
-      model: spec.model,
-      choices: [
-        {
-          index: 0,
-          message: { role: "assistant", content: result.response ?? "" },
-          finish_reason: "stop"
-        }
-      ]
-    });
-  }
-};
-
-const LANE_TIMEOUT_MS = 3e4;
-function openaiCompatLane(defaults) {
-  return {
-    available(ctx, spec) {
-      return Boolean(ctx.env.get(spec?.keyEnv ?? defaults.keyEnv ?? ""));
-    },
-    async dispatch(ctx, spec, body) {
-      const baseUrl = (spec.baseUrl ?? defaults.baseUrl)?.replace(/\/$/, "");
-      if (!baseUrl) throw new Error(`lane ${spec.provider}: no baseUrl`);
-      const apiKey = ctx.env.get(spec.keyEnv ?? defaults.keyEnv ?? "");
-      if (!apiKey) throw new Error(`lane ${spec.provider}: missing API key`);
-      return ofetch.raw(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          "content-type": "application/json"
-        },
-        body: { ...body, model: spec.model },
-        timeout: LANE_TIMEOUT_MS,
-        retry: 0,
-        // failover happens at lane level, never mid-lane
-        ignoreResponseError: true
-        // return the raw response, status intact
-      });
-    }
-  };
-}
-
-const OPENAI_COMPAT_DEFAULTS = {
-  groq: { baseUrl: "https://api.groq.com/openai/v1", keyEnv: "GROQ_API_KEY" },
-  zai: { baseUrl: "https://api.z.ai/api/paas/v4", keyEnv: "ZAI_API_KEY" },
-  google: {
-    // Google's OpenAI-compat shim — same wire format, no bespoke adapter.
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    keyEnv: "GOOGLE_AI_API_KEY"
-  },
-  openrouter: {
-    baseUrl: "https://openrouter.ai/api/v1",
-    keyEnv: "OPENROUTER_API_KEY"
-  }
-};
-function resolveLane(spec) {
-  if (spec.provider === "cf-ai") return cfAiLane;
-  const defaults = OPENAI_COMPAT_DEFAULTS[spec.provider];
-  return openaiCompatLane(defaults ?? {});
-}
-
 const HOP_BY_HOP = /* @__PURE__ */ new Set([
   "connection",
   "keep-alive",
@@ -349,38 +231,75 @@ const proxyStep = async (ctx) => {
   const route = ctx.profile.models[ctx.body.model];
   const cb = circuitBreaker(ctx.storage);
   const failures = [];
+  const startedAt = Date.now();
+  let attempts = 0;
+  const emitAttempt = (info) => emit(ctx.onLaneAttempt, ctx, info);
+  const done = (provider, status) => {
+    emit(ctx.onRequestDone, ctx, {
+      alias: ctx.body.model,
+      provider,
+      attempts,
+      latencyMs: Date.now() - startedAt,
+      status
+    });
+  };
   for (const spec of route.lanes) {
     const laneKey = `${ctx.profile.name}:${spec.provider}`;
-    const lane = resolveLane(spec);
-    if (!lane.available(ctx, spec)) continue;
-    if (await cb.isOpen(laneKey)) continue;
-    let res;
+    const base = { alias: ctx.body.model, provider: spec.provider, model: spec.model };
+    let lane;
     try {
-      res = await lane.dispatch(ctx, spec, ctx.body);
-    } catch (err) {
-      await cb.recordFailure(laneKey);
-      failures.push(`${spec.provider}: dispatch ${err instanceof Error ? err.message : "error"}`);
+      lane = resolveModel(ctx, spec, ctx.providers);
+    } catch {
+      lane = void 0;
+    }
+    if (!lane) {
+      emitAttempt({ ...base, outcome: "skipped_unavailable" });
       continue;
     }
-    if (res.ok) {
-      await cb.recordSuccess(laneKey);
-      return new Response(res.body, {
-        status: res.status,
-        headers: passthroughHeaders(res, ctx)
+    if (await cb.isOpen(laneKey)) {
+      emitAttempt({ ...base, outcome: "skipped_circuit" });
+      continue;
+    }
+    attempts++;
+    const t0 = Date.now();
+    try {
+      const { response } = await dispatchLane(ctx, spec, ctx.body, {
+        model: lane.model,
+        onDone: (info) => (
+          // Stream usage lands post-commit — reported asynchronously.
+          emitAttempt({ ...base, outcome: "ok", status: 200, latencyMs: Date.now() - t0, usage: info.usage })
+        )
       });
+      defer(ctx.event, () => cb.recordSuccess(laneKey));
+      const res = new Response(response.body, {
+        status: response.status,
+        headers: passthroughHeaders(response, ctx)
+      });
+      done(spec.provider, response.status);
+      return res;
+    } catch (err) {
+      const le = err instanceof LaneError ? err : new LaneError("dispatch failed");
+      const status = le.status;
+      const failover = status === void 0 || isFailoverStatus(status);
+      if (failover) defer(ctx.event, () => cb.recordFailure(laneKey));
+      emitAttempt({
+        ...base,
+        outcome: failover ? "failed" : "client_error",
+        status,
+        latencyMs: Date.now() - t0
+      });
+      if (!failover) {
+        done(spec.provider, status);
+        return new Response(le.body ?? le.message ?? "Upstream error", {
+          status,
+          headers: corsHeaders(ctx)
+        });
+      }
+      failures.push(`${spec.provider}: ${le.message}`);
     }
-    const detail = await res.text().catch(() => "");
-    if (isFailoverStatus(res.status)) {
-      await cb.recordFailure(laneKey);
-      failures.push(`${spec.provider}: http ${res.status}`);
-      continue;
-    }
-    return new Response(detail || res.statusText, {
-      status: res.status,
-      headers: passthroughHeaders(res, ctx)
-    });
   }
   console.error("all lanes failed", failures);
+  done(void 0, 503);
   return allLanesDown();
 };
 
@@ -409,7 +328,10 @@ function createGateway(opts) {
         env: createEnvAccess(event),
         storage,
         requestId: crypto.randomUUID(),
-        clientIp: getClientIp(event)
+        clientIp: getClientIp(event),
+        providers: opts.providers,
+        onLaneAttempt: opts.onLaneAttempt,
+        onRequestDone: opts.onRequestDone
       };
       const res = await runPipeline(ctx, steps);
       const headers = new Headers(res.headers);
@@ -483,4 +405,4 @@ const index = {
   rateLimitStep: rateLimitStep
 };
 
-export { allLanesDown, badRequest, cfAiLane, cfBindingLimiter, circuitBreaker, createEnvAccess, createGateway, createRateLimiter, defaultSteps, defineGatewayProfile, forbidden, gatewayError, getClientIp, memoryLimiter, modelsList, openaiCompatLane, parseModelsJson, rateLimited, resolveLane, runPipeline, index as steps, unstorageLimiter };
+export { LaneError, allLanesDown, badRequest, cfBindingLimiter, circuitBreaker, createEnvAccess, createGateway, createRateLimiter, defaultSteps, defineGatewayProfile, dispatchLane, forbidden, gatewayError, getClientIp, memoryLimiter, modelsList, parseModelsJson, rateLimited, resolveModel, runPipeline, index as steps, unstorageLimiter };

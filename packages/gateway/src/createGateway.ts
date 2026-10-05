@@ -9,7 +9,7 @@ import { botGateStep } from "./steps/botGate";
 import { rateLimitStep } from "./steps/rateLimit";
 import { clampStep } from "./steps/clamp";
 import { proxyStep } from "./steps/proxy";
-import type { GatewayContext, GatewayProfile, Step } from "./types";
+import type { GatewayContext, GatewayProfile, ModelFactory, Step } from "./types";
 
 export const defaultSteps: Step[] = [
   corsStep,
@@ -36,6 +36,18 @@ export interface GatewayOptions {
   storage: Storage | ((event: H3Event) => Storage);
   /** Ordered pipeline steps; defaults to the full security chain. */
   steps?: Step[];
+  /**
+   * Deployment provider factories shadowing built-ins — lane `provider`
+   * names map to LanguageModelV4 factories (see ModelFactory). The plug
+   * seam for providers we don't ship.
+   */
+  providers?: Record<string, ModelFactory>;
+  /**
+   * Observability hooks — called with lane metadata only (never prompt
+   * content): wire to console.log, KV counters, Analytics Engine, OTel…
+   */
+  onLaneAttempt?: GatewayContext["onLaneAttempt"];
+  onRequestDone?: GatewayContext["onRequestDone"];
 }
 
 /**
@@ -66,6 +78,9 @@ export function createGateway(opts: GatewayOptions) {
         storage,
         requestId: crypto.randomUUID(),
         clientIp: getClientIp(event),
+        providers: opts.providers,
+        onLaneAttempt: opts.onLaneAttempt,
+        onRequestDone: opts.onRequestDone,
       };
 
       const res = await runPipeline(ctx, steps);
