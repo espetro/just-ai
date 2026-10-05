@@ -21,8 +21,7 @@
   "scripts": {
     "build": "unbuild",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "prepare": "pnpm build"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.71",
